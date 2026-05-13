@@ -5,8 +5,10 @@ Two scripts that bridge OME-Zarr volumes (X-ray µCT, light-sheet, etc.) and
 registration to the Allen Mouse Brain CCF. The end result is a multiscale OME-Zarr
 in atlas space — ready for Neuroglancer.
 
-- [scripts/zarr_to_nrrd.py](scripts/zarr_to_nrrd.py) — extract a downsampled NRRD from a
-  zarr (brainreg input).
+- [scripts/zarr_to_nrrd.py](scripts/zarr_to_nrrd.py) — extract a downsampled volume from
+  a zarr. Output format is chosen by the file extension:
+    - `.nii.gz` → **NIfTI** (RAS, mm) — use this for `brainreg`.
+    - `.nrrd`   → **NRRD** (LPS, mm, gzip) — for ITK-SNAP / 3D Slicer / transformix.
 - [scripts/apply_brainreg_to_zarr.py](scripts/apply_brainreg_to_zarr.py) — apply
   brainreg's transforms to the original full-resolution zarr, chunk-by-chunk, writing a
   new multiscale OME-Zarr in atlas space.
@@ -23,13 +25,14 @@ conda install -c conda-forge niftyreg     # only needed to apply B-spline
 ## Workflow
 
 ```bash
-# 1. Extract a downsampled NRRD from the zarr (~25 µm to match the atlas)
+# 1. Extract a downsampled NIfTI from the zarr (~25 µm to match the atlas).
+#    Output extension picks the format: .nii.gz for brainreg, .nrrd for ITK-SNAP/Slicer.
 python scripts/zarr_to_nrrd.py \
-    /data/sample.zarr  sample_ds.nrrd \
+    /data/sample.zarr  sample_ds.nii.gz \
     --level 2 --factor 9
 
 # 2. Register with brainreg
-brainreg sample_ds.nrrd ./brainreg_out \
+brainreg sample_ds.nii.gz ./brainreg_out \
     -v 24.84 24.84 24.84 \
     --orientation psr \
     --atlas allen_mouse_25um
@@ -58,8 +61,18 @@ cd out && python -m http.server 8000 --bind 127.0.0.1
 - Uses **strided** decimation (not block-mean). Strided is faster and is fine for the
   atlas registration step — `brainreg` smooths internally during its own multi-resolution
   pyramid.
-- Writes NRRD with **mm** spacing in the **LPS** frame — the conventions
-  brainreg / NiftyReg / ITK-SNAP all expect.
+- **Output format depends on the extension you give:**
+
+  | Extension | Format | Frame | Used by |
+  |---|---|---|---|
+  | `.nii.gz` | NIfTI (binary header + gzip data) | RAS | brainreg, NiftyReg, FSL, SPM |
+  | `.nrrd`   | NRRD (text header + gzip data)   | LPS | ITK-SNAP, 3D Slicer, transformix |
+
+  NIfTI and NRRD are **different file formats**, even though they store the same kind
+  of 3D volume data with mm spacing. They differ in header structure and default
+  anatomical-coordinate frame (a sign flip on x/y between RAS and LPS). For the
+  brainreg pipeline always use `.nii.gz`; brainreg's `load_any` doesn't recognise
+  `.nrrd`.
 
 ### Step 2: `brainreg`
 
@@ -96,8 +109,9 @@ disk accordingly.
 ## Coordinate conventions (gotchas)
 
 - **numpy / OME-Zarr**: axis order is `(z, y, x)`; voxel sizes in **µm**.
-- **NRRD / NIfTI / NiftyReg / brainreg**: physical coordinates in **mm**, vector order
-  `(x, y, z)`. NIfTI is conventionally RAS; NRRD is conventionally LPS.
+- **NRRD / NIfTI**: physical coordinates in **mm**, vector order `(x, y, z)`. NIfTI is
+  conventionally RAS; NRRD is conventionally LPS. They are **distinct file formats** —
+  same data, different headers and default anatomical frame.
 
 The application script keeps everything in physical mm internally and converts
 numpy-zyx ↔ NIfTI-xyz at the boundaries via an explicit permutation matrix. brainreg's
