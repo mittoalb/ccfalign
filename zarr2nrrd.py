@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
-"""Extract a downsampled NRRD from an OME-Zarr group, suitable for `brainreg`.
+"""Extract a downsampled volume from an OME-Zarr group, in a format `brainreg`
+(and friends) can read.
+
+Output format is chosen by the extension:
+    out.nii.gz  → NIfTI  (RECOMMENDED — brainreg accepts this out of the box)
+    out.nrrd    → NRRD   (mm, LPS, gzip — readable by ITK-SNAP, 3D Slicer, but NOT
+                          by brainreg's `load_any`)
 
 Usage:
-    python zarr_to_nrrd.py /data/sample.zarr out.nrrd \
-        --level 2 --factor 9
-
-The output NRRD has spacing in millimeters, LPS frame, gzip-encoded — the
-combination `brainreg` / NiftyReg / ITK-SNAP all expect.
+    python zarr_to_nrrd.py /data/sample.zarr out.nii.gz --level 2 --factor 9
 """
 from __future__ import annotations
 
@@ -16,7 +18,6 @@ from pathlib import Path
 
 import dask.array as da
 import numpy as np
-import nrrd
 import zarr
 
 
@@ -72,25 +73,37 @@ def main():
     print(f"loaded: shape={data.shape}, dtype={data.dtype}, "
           f"size={data.nbytes / 1e6:.1f} MB")
 
-    # write NRRD: LPS frame, mm spacing, (x,y,z) order on disk
-    sz_mm, sy_mm, sx_mm = (v * 1e-3 for v in out_um)
-    header = {
-        "type": str(data.dtype),
-        "dimension": 3,
-        "space": "left-posterior-superior",
-        "sizes": list(data.shape[::-1]),    # NRRD uses (x, y, z)
-        "space directions": [
-            [sx_mm, 0.0, 0.0],
-            [0.0, sy_mm, 0.0],
-            [0.0, 0.0, sz_mm],
-        ],
-        "kinds": ["domain", "domain", "domain"],
-        "endian": "little",
-        "encoding": "gzip",
-        "space origin": [0.0, 0.0, 0.0],
-    }
     args.out_nrrd.parent.mkdir(parents=True, exist_ok=True)
-    nrrd.write(str(args.out_nrrd), np.transpose(data, (2, 1, 0)), header)
+    sz_mm, sy_mm, sx_mm = (v * 1e-3 for v in out_um)
+    suffix = "".join(args.out_nrrd.suffixes).lower()
+
+    if suffix in (".nii", ".nii.gz"):
+        # NIfTI: RAS frame, mm. nibabel takes (x, y, z) data + a 4x4 affine.
+        import nibabel as nib
+        affine = np.diag([sx_mm, sy_mm, sz_mm, 1.0])
+        nib.save(nib.Nifti1Image(np.transpose(data, (2, 1, 0)), affine),
+                 str(args.out_nrrd))
+    elif suffix == ".nrrd":
+        import nrrd
+        header = {
+            "type": str(data.dtype),
+            "dimension": 3,
+            "space": "left-posterior-superior",
+            "sizes": list(data.shape[::-1]),
+            "space directions": [
+                [sx_mm, 0.0, 0.0],
+                [0.0, sy_mm, 0.0],
+                [0.0, 0.0, sz_mm],
+            ],
+            "kinds": ["domain", "domain", "domain"],
+            "endian": "little",
+            "encoding": "gzip",
+            "space origin": [0.0, 0.0, 0.0],
+        }
+        nrrd.write(str(args.out_nrrd), np.transpose(data, (2, 1, 0)), header)
+    else:
+        sys.exit(f"unsupported output extension '{suffix}'. "
+                 f"Use .nii.gz (recommended for brainreg) or .nrrd.")
     print(f"wrote: {args.out_nrrd}  ({args.out_nrrd.stat().st_size / 1e6:.1f} MB)")
 
 
